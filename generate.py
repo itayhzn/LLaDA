@@ -42,7 +42,9 @@ def get_num_transfer_tokens(mask_index, steps):
 
 @ torch.no_grad()
 def generate(model, prompt, attention_mask=None, steps=128, gen_length=128, block_length=128, temperature=0.,
-             cfg_scale=0., remasking='low_confidence', mask_id=126336, logits_eos_inf=False, confidence_eos_eot_inf=False):
+             cfg_scale=0., remasking='low_confidence', mask_id=126336, logits_eos_inf=False, confidence_eos_eot_inf=False,
+             w_hallucinate=0., hallucinate_p=0., hallucinate_t=1.,
+             w_summary=0., summary_p=0., summary_t=1.):
     '''
     Args:
         model: Mask predictor.
@@ -91,6 +93,55 @@ def generate(model, prompt, attention_mask=None, steps=128, gen_length=128, bloc
             if logits_eos_inf:
                 logits[:, :, 126081] = -torch.inf
 
+            # --- Hallucinate-the-future guidance ---
+            if w_hallucinate > 0:
+                probs_hal = F.softmax(logits, dim=-1)
+                preds_hal = torch.argmax(probs_hal, dim=-1)  # b, l
+                conf_hal = torch.gather(probs_hal, dim=-1, index=preds_hal.unsqueeze(-1)).squeeze(-1)  # b, l
+                conf_hal[~mask_index] = torch.inf  # only consider masked positions
+
+                x_hal = x.clone()
+                for j in range(x.shape[0]):
+                    num_masked_j = mask_index[j].sum().item()
+                    if num_masked_j == 0:
+                        continue
+                    if hallucinate_p > 0:
+                        n_reveal = max(1, int(hallucinate_p * num_masked_j))
+                    else:
+                        n_reveal = max(1, int(hallucinate_t * num_transfer_tokens[j, i].item()))
+                    n_reveal = min(n_reveal, num_masked_j)
+                    _, low_idx = torch.topk(conf_hal[j], k=n_reveal, largest=False)
+                    x_hal[j, low_idx] = preds_hal[j, low_idx]
+
+                logits_hal = model(x_hal, attention_mask=attention_mask).logits
+                logits = (1 + w_hallucinate) * logits - w_hallucinate * logits_hal
+
+            # --- Summarize-the-past guidance ---
+            if w_summary > 0:
+                committed = ~mask_index & ~prompt_index
+                has_committed = committed.any(dim=1)  # b
+
+                if has_committed.any():
+                    probs_sum = F.softmax(logits, dim=-1)
+                    actual_conf = torch.gather(probs_sum, dim=-1, index=x.unsqueeze(-1)).squeeze(-1)  # b, l
+                    actual_conf[~committed] = torch.inf  # only consider committed positions
+
+                    x_summary = x.clone()
+                    for j in range(x.shape[0]):
+                        num_committed_j = committed[j].sum().item()
+                        if num_committed_j == 0:
+                            continue
+                        if summary_p > 0:
+                            n_remask = max(1, int(summary_p * num_committed_j))
+                        else:
+                            n_remask = max(1, int(summary_t * num_transfer_tokens[j, i].item()))
+                        n_remask = min(n_remask, num_committed_j)
+                        _, low_idx = torch.topk(actual_conf[j], k=n_remask, largest=False)
+                        x_summary[j, low_idx] = mask_id
+
+                    logits_sum = model(x_summary, attention_mask=attention_mask).logits
+                    logits = (1 + w_summary) * logits - w_summary * logits_sum
+
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
             x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
             
@@ -134,6 +185,8 @@ def main(
     mask_id: int = 126336,
     logits_eos_inf: bool = False,
     confidence_eos_eot_inf: bool = False,
+    w_hallucinate: float = 0., hallucinate_p: float = 0., hallucinate_t: float = 1.,
+    w_summary: float = 0., summary_p: float = 0., summary_t: float = 1.,
     device: str = 'cuda',
 ):
     model = AutoModel.from_pretrained(model_name, trust_remote_code=True, torch_dtype=torch.bfloat16).to(device).eval()
@@ -169,7 +222,7 @@ def main(
     input_ids = encoded_outputs['input_ids'].to(device)
     attention_mask = encoded_outputs['attention_mask'].to(device)
 
-    out = generate(model, input_ids, attention_mask, steps=steps, gen_length=gen_length, block_length=block_length, temperature=temperature, cfg_scale=cfg_scale, remasking=remasking, mask_id=mask_id, logits_eos_inf=logits_eos_inf, confidence_eos_eot_inf=confidence_eos_eot_inf)
+    out = generate(model, input_ids, attention_mask, steps=steps, gen_length=gen_length, block_length=block_length, temperature=temperature, cfg_scale=cfg_scale, remasking=remasking, mask_id=mask_id, logits_eos_inf=logits_eos_inf, confidence_eos_eot_inf=confidence_eos_eot_inf, w_hallucinate=w_hallucinate, hallucinate_p=hallucinate_p, hallucinate_t=hallucinate_t, w_summary=w_summary, summary_p=summary_p, summary_t=summary_t)
     output = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)
     
     output_string = ""
