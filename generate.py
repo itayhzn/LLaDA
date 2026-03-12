@@ -86,7 +86,7 @@ def generate(model, prompt, attention_mask=None, steps=128, gen_length=128, bloc
                 logits, un_logits = torch.chunk(logits, 2, dim=0)
                 logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
             else:
-                logits = model(x, attention_mask=attention_mask).logits
+                logits = model(x, attention_mask=attention_mask).logits # b, l, vocab_size
 
             if logits_eos_inf:
                 logits[:, :, 126081] = -torch.inf
@@ -98,7 +98,7 @@ def generate(model, prompt, attention_mask=None, steps=128, gen_length=128, bloc
                 logits_with_noise[:, :, 126081] = logits[:, :, 126348] = -torch.inf
 
             if remasking == 'low_confidence':
-                p = F.softmax(logits, dim=-1)
+                p = F.softmax(logits, dim=-1) # b, l
                 x0_p = torch.squeeze(
                     torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
             elif remasking == 'random':
@@ -120,11 +120,24 @@ def generate(model, prompt, attention_mask=None, steps=128, gen_length=128, bloc
     return x
 
 
-def main():
-    device = 'cuda'
-
-    model = AutoModel.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True, torch_dtype=torch.bfloat16).to(device).eval()
-    tokenizer = AutoTokenizer.from_pretrained('GSAI-ML/LLaDA-8B-Instruct', trust_remote_code=True)
+def main(
+    model_name: str = "GSAI-ML/LLaDA-8B-Instruct",
+    prompt: str | None = None,
+    prompt_file: str | None = None,
+    output_file: str | None = None,
+    steps: int = 128,
+    gen_length: int = 128,
+    block_length: int = 32,
+    temperature: float = 0.,
+    cfg_scale: float = 0.,
+    remasking: str = 'low_confidence',
+    mask_id: int = 126336,
+    logits_eos_inf: bool = False,
+    confidence_eos_eot_inf: bool = False,
+    device: str = 'cuda',
+):
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True, torch_dtype=torch.bfloat16).to(device).eval()
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     # The LLaDA architecture theoretically supports both left-padding and right-padding. 
     # However, the sampling code implementation is simpler with left-padding.
@@ -134,9 +147,14 @@ def main():
     # If the padding ID equals the mask ID, you need to modify our generate function to achieve correct inference.
     assert tokenizer.pad_token_id != 126336
 
-    prompts = [ "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?",
-             "Joy can read 8 pages of a book in 20 minutes. How many hours will it take her to read 120 pages?",
-             "Randy has 60 mango trees on his farm. He also has 5 less than half as many coconut trees as mango trees. How many trees does Randy have in all on his farm?"]
+    if prompt_file is not None:
+        with open(prompt_file, 'r') as f:
+            prompts = f.read().splitlines()
+            prompts = [p.strip() for p in prompts if len(p.strip()) > 0 and not p.strip().startswith("#")] 
+    elif prompt is not None:
+        prompts = [ prompt ]
+    else:
+        raise ValueError("Either prompt or prompt_file must be provided.")
 
     # Add special tokens for the Instruct model. The Base model does not require the following two lines.
     messages = [{"role": "user", "content": prompt} for prompt in prompts]
@@ -151,11 +169,24 @@ def main():
     input_ids = encoded_outputs['input_ids'].to(device)
     attention_mask = encoded_outputs['attention_mask'].to(device)
 
-    out = generate(model, input_ids, attention_mask, steps=128, gen_length=128, block_length=32, temperature=0., cfg_scale=0., remasking='low_confidence')
+    out = generate(model, input_ids, attention_mask, steps=steps, gen_length=gen_length, block_length=block_length, temperature=temperature, cfg_scale=cfg_scale, remasking=remasking, mask_id=mask_id, logits_eos_inf=logits_eos_inf, confidence_eos_eot_inf=confidence_eos_eot_inf)
     output = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)
-    for o in output:
-        print(o)
-        print('-' * 50)
+    
+    output_string = ""
+    for i, o in enumerate(output):
+        output_string += f"Prompt {i+1}: {prompts[i]}\n"
+        output_string += f"Completion: {o}\n"
+        output_string += '-' * 50
+        output_string += '\n'
+
+    if output_file is not None:
+        with open(output_file, 'w') as f:
+            f.write(output_string)
+    else:
+        print(output_string)
 
 if __name__ == '__main__':
-    main()
+    from fire import Fire
+
+    Fire(main)
+
