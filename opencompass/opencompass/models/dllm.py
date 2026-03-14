@@ -143,6 +143,12 @@ class LLaDAModel(BaseModel):
                  batch_size_ = 1,
                  diff_confidence_eos_eot_inf = False,
                  diff_logits_eos_inf = False,
+                 w_hallucinate = 0.,
+                 hallucinate_p = 0.,
+                 hallucinate_t = 1.,
+                 w_summary = 0.,
+                 summary_p = 0.,
+                 summary_t = 1.,
                  ) -> None:
         super().__init__(path=path,
                          max_seq_len=max_seq_len,
@@ -182,6 +188,12 @@ class LLaDAModel(BaseModel):
         self.mask_id = mask_id
         self.diff_confidence_eos_eot_inf = diff_confidence_eos_eot_inf
         self.diff_logits_eos_inf = diff_logits_eos_inf
+        self.w_hallucinate = w_hallucinate
+        self.hallucinate_p = hallucinate_p
+        self.hallucinate_t = hallucinate_t
+        self.w_summary = w_summary
+        self.summary_p = summary_p
+        self.summary_t = summary_t
 
         self.template_parser = _get_meta_template(meta_template)
 
@@ -391,6 +403,12 @@ class LLaDAModel(BaseModel):
             mask_id = self.mask_id,
             confidence_eos_eot_inf = self.diff_confidence_eos_eot_inf,
             logits_eos_inf = self.diff_logits_eos_inf,
+            w_hallucinate = self.w_hallucinate,
+            hallucinate_p = self.hallucinate_p,
+            hallucinate_t = self.hallucinate_t,
+            w_summary = self.w_summary,
+            summary_p = self.summary_p,
+            summary_t = self.summary_t,
         )
         responses = []
         batch_size = prompt.shape[0]
@@ -527,6 +545,12 @@ class LLaDABaseModel(LLaDAModel):
             mask_id = self.mask_id,
             confidence_eos_eot_inf = self.diff_confidence_eos_eot_inf,
             logits_eos_inf = self.diff_logits_eos_inf,
+            w_hallucinate = self.w_hallucinate,
+            hallucinate_p = self.hallucinate_p,
+            hallucinate_t = self.hallucinate_t,
+            w_summary = self.w_summary,
+            summary_p = self.summary_p,
+            summary_t = self.summary_t,
         )
         responses = []
         batch_size = prompt.shape[0]
